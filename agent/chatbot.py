@@ -1,45 +1,60 @@
 import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List
 from dotenv import load_dotenv
+
 from langchain_groq import ChatGroq
 from langchain.schema import HumanMessage
 from langgraph.graph import StateGraph, MessagesState
-from menu_handler import handle_menu   # ✅ Import menu handler
+from menu_handler import handle_menu
 
 load_dotenv()
 
-# Initialize Groq LLM with supported model
 llm = ChatGroq(
     groq_api_key=os.getenv("GROQ_API_KEY"),
-    model_name="llama-3.1-8b-instant"   # ✅ supported model
+    model_name="llama-3.1-8b-instant"
 )
 
-# Define how chatbot responds
 def chatbot_node(state: MessagesState):
     last_message = state["messages"][-1].content
     menu_reply = handle_menu(last_message, state["messages"])
 
-    if menu_reply:  # ✅ intercept menu flow (guided options)
+    if menu_reply:
         return {"messages": state["messages"] + [menu_reply]}
     
-    # Fallback → use Groq LLM for free chat
     response = llm.invoke(state["messages"])
     return {"messages": state["messages"] + [response]}
 
-# Build LangGraph workflow
 graph = StateGraph(MessagesState)
 graph.add_node("chatbot", chatbot_node)
 graph.set_entry_point("chatbot")
 chatbot_app = graph.compile()
 
-if __name__ == "__main__":
-    print("🍳 Kitchen Chatbot is ready! Type 'exit' to quit.\n")
-    conversation = {"messages": []}
+app = FastAPI()
 
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() == "exit":
-            break
-        conversation["messages"].append(HumanMessage(content=user_input))
-        conversation = chatbot_app.invoke(conversation)   # ✅ invoke LangGraph
-        bot_reply = conversation["messages"][-1].content
-        print(f"Bot: {bot_reply}\n")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Change or add origins as needed for your frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+class Conversation(BaseModel):
+    messages: List[Message]
+
+@app.post("/chat")
+async def chat_endpoint(conversation: Conversation):
+    # Convert incoming messages to HumanMessage objects for the agent
+    state = {"messages": [HumanMessage(content=msg.content) for msg in conversation.messages]}
+    # Invoke the chatbot
+    new_state = chatbot_app.invoke(state)
+    # Return only the latest bot reply
+    return {"reply": new_state["messages"][-1].content}
